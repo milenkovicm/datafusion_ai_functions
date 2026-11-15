@@ -1,0 +1,18 @@
+[package]
+name = "datafusion_ai_functions"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+datafusion = { version = "55.2" }
+async-trait = "0.1"
+async-openai = { version = "0.43", features = ["chat-completion", "middleware"] }
+reqwest = { version = "0.13", default-features = false }
+tower = { version = "0.5" }
+futures = "0.3"
+log = "0.4"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
