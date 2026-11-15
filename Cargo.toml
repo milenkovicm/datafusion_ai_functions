@@ -2,6 +2,7 @@
 name = "datafusion_ai_functions"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 datafusion = { version = "55.2" }

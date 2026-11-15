@@ -1,4 +1,4 @@
-# datafusion_ai_functions
+# datafusion_ai_functions [![Basic Flow](https://github.com/milenkovicm/datafusion_ai_functions/actions/workflows/basic.yml/badge.svg)](https://github.com/milenkovicm/datafusion_ai_functions/actions/workflows/basic.yml)
 
 AI SQL functions for [Apache DataFusion](https://datafusion.apache.org/). They call an LLM through any OpenAI-compatible Chat Completions API (OpenAI, Ollama, vLLM, LiteLLM, ...).
 
