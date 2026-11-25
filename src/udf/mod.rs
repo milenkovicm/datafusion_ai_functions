@@ -7,6 +7,7 @@ mod ai_classify;
 mod ai_complete;
 mod ai_query;
 mod ai_summarize;
+mod decision;
 
 use std::future::Future;
 use std::pin::pin;
@@ -28,14 +29,20 @@ pub use ai_classify::AiClassify;
 pub use ai_complete::AiComplete;
 pub use ai_query::AiQuery;
 pub use ai_summarize::AiSummarize;
+pub use decision::{AiDecide, AiDecideClassify, AiIf, AiProbability, AiScore};
 
 /// Names of all AI functions in this crate.
-pub(crate) const AI_FUNCTION_NAMES: [&str; 5] = [
+pub(crate) const AI_FUNCTION_NAMES: &[&str] = &[
     ai_query::NAME,
     ai_complete::NAME,
     ai_classify::NAME,
     ai_summarize::NAME,
     ai_analyze_sentiment::NAME,
+    decision::ai_probability::NAME,
+    decision::ai_if::NAME,
+    decision::ai_score::NAME,
+    decision::ai_decide_classify::NAME,
+    decision::ai_decide::NAME,
 ];
 
 /// String types accepted for text arguments.
@@ -400,22 +407,40 @@ pub(crate) fn null_on_error<T>(name: &str, fail_on_error: bool, r: Result<T>) ->
 }
 
 /// Evaluate `f` for each row in `0..num_rows` with at most `concurrency`
-/// futures in flight, and collect the results into a `Utf8` array in row
-/// order. `Ok(None)` becomes NULL. The first error stops the loop, cancels
-/// in-flight requests and fails the call.
-pub(crate) async fn map_rows<F, Fut>(concurrency: usize, num_rows: usize, f: F) -> Result<ArrayRef>
+/// futures in flight, and collect the results in row order. The first error
+/// stops the loop, cancels in-flight requests and fails the call.
+pub(crate) async fn map_rows_with<T, F, Fut>(
+    concurrency: usize,
+    num_rows: usize,
+    f: F,
+) -> Result<Vec<T>>
 where
     F: FnMut(usize) -> Fut,
-    Fut: Future<Output = Result<Option<String>>>,
+    Fut: Future<Output = Result<T>>,
 {
-    let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 64);
+    let mut out = Vec::with_capacity(num_rows);
     let mut results = pin!(
         futures::stream::iter(0..num_rows)
             .map(f)
             .buffered(concurrency.max(1))
     );
     while let Some(r) = results.next().await {
-        builder.append_option(r?);
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Like [`map_rows_with`], collecting into a `Utf8` array. `Ok(None)`
+/// becomes NULL.
+pub(crate) async fn map_rows<F, Fut>(concurrency: usize, num_rows: usize, f: F) -> Result<ArrayRef>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = Result<Option<String>>>,
+{
+    let rows = map_rows_with(concurrency, num_rows, f).await?;
+    let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 64);
+    for r in rows {
+        builder.append_option(r);
     }
     Ok(Arc::new(builder.finish()))
 }

@@ -1,6 +1,6 @@
 # datafusion_ai_functions [![Basic Flow](https://github.com/milenkovicm/datafusion_ai_functions/actions/workflows/basic.yml/badge.svg)](https://github.com/milenkovicm/datafusion_ai_functions/actions/workflows/basic.yml)
 
-AI SQL functions for [Apache DataFusion](https://datafusion.apache.org/). They call an LLM through any OpenAI-compatible Chat Completions API (OpenAI, Ollama, vLLM, LiteLLM, ...).
+AI SQL functions for [Apache DataFusion](https://datafusion.apache.org/). They call an LLM through any OpenAI-compatible Chat Completions API (OpenAI, Ollama, vLLM, LiteLLM, ...), or a decision model through OpenAI's Decisions API or Ollama's `systemone` endpoint.
 
 | Function | Purpose |
 | --- | --- |
@@ -9,6 +9,11 @@ AI SQL functions for [Apache DataFusion](https://datafusion.apache.org/). They c
 | `ai_classify(content, labels [, options])` | Pick the matching label(s) for a text |
 | `ai_summarize(content [, max_words])` | Summarize a text |
 | `ai_analyze_sentiment(content)` | `positive`, `negative`, `neutral` or `mixed` |
+| `ai_probability(input, condition [, options])` | Probability that a statement holds (decision model) |
+| `ai_if(input, condition [, options])` | Whether that probability is above 0.5 (decision model) |
+| `ai_score(input, instructions, levels [, options])` | Rate on ordered levels (decision model) |
+| `ai_decide_classify(input, labels [, options])` | Pick one label (decision model) |
+| `ai_decide(input, questions [, options])` | Several questions in one request (decision model) |
 
 All functions are DataFusion async scalar UDFs (`AsyncScalarUDFImpl`), so HTTP requests don't block the executor. In the physical plan they show up as `AsyncFuncExec`.
 
@@ -38,9 +43,11 @@ let ctx = SessionContext::new_with_config(session_config_with_ai_query(cfg));
 ctx.register_udf(ai_query_udf());
 ```
 
-`register_ai_query` and `ai_query_udf` only register `ai_query`. Use `ai_complete_udf()`, `ai_classify_udf()`, `ai_summarize_udf()` and `ai_analyze_sentiment_udf()` for the others.
+`register_ai_query` and `ai_query_udf` only register `ai_query`. Use `ai_complete_udf()`, `ai_classify_udf()`, `ai_summarize_udf()`, `ai_analyze_sentiment_udf()`, `ai_probability_udf()`, `ai_if_udf()`, `ai_score_udf()`, `ai_decide_classify_udf()` and `ai_decide_udf()` for the others.
 
 ## Common behaviour
+
+This section is about the chat functions. The decision functions have their own rules, see [Decision functions](#decision-functions).
 
 - Text arguments accept `Utf8`, `LargeUtf8` and `Utf8View`. A NULL text gives a NULL result and sends no request.
 - Each non-NULL row sends one chat completion request. The result is the content of the first choice.
@@ -183,6 +190,69 @@ SELECT ai_analyze_sentiment('I am happy');
 - Returns `positive`, `negative`, `neutral` or `mixed`, or NULL if the model's reply isn't one of those (it's told to reply `unknown` when it can't tell).
 - Requests use temperature `0` unless `datafusion_ai_functions.temperature` is set. `datafusion_ai_functions.system_prompt` isn't used.
 
+## Decision functions
+
+A decision model doesn't write text. It answers questions about an input with probabilities: how likely a statement is (`noul`, also called `predicate`), which option fits (`choice`), or which level on a scale fits (`score`). These functions follow the [Spice decision functions](https://spice.ai/blog/decision-models).
+
+```sql
+-- local Ollama with the `nimble` decision model
+SET datafusion_ai_functions.decision_api = 'systemone';
+SET datafusion_ai_functions.decision_endpoint = 'http://localhost:11434/v1';
+SET datafusion_ai_functions.decision_model = 'nimble';
+
+SELECT id, subject FROM tickets
+WHERE status = 'open' AND ai_if(body, 'The customer is asking for a refund');
+
+SELECT id, ai_probability(body, 'The customer threatens to cancel') AS churn_risk
+FROM tickets ORDER BY churn_risk DESC;
+
+SELECT id, ai_decide_classify(body, ['billing', 'technical', 'other'],
+                              MAP('instructions', 'Which team should handle this ticket?', 'on_error', 'null')) AS team
+FROM tickets;
+
+SELECT id, ai_score(body, 'How frustrated is the customer?', ['calm', 'annoyed', 'furious']) AS frustration
+FROM tickets ORDER BY frustration DESC;
+
+SELECT id, d['team']['choice'] AS team, d['urgent']['probability'] AS p_urgent
+FROM (SELECT id, ai_decide(body, '{
+        "team":   {"type": "choice", "instructions": "Which team?", "criteria": {"billing": "Payments and refunds", "technical": null}},
+        "urgent": {"type": "noul", "instructions": "The customer needs help today"}
+      }') AS d FROM tickets);
+```
+
+| Function | Returns |
+| --- | --- |
+| `ai_probability(input, condition [, options])` | `Float64` from 0 to 1 |
+| `ai_if(input, condition [, options])` | `Boolean`: true when the probability is above 0.5 |
+| `ai_score(input, instructions, levels [, options])` | `Float64` from 0 to n-1: the probability-weighted 0-based index of the level. `levels` has 2 to 10 levels, lowest first. |
+| `ai_decide_classify(input, labels [, options])` | `Utf8`, always one of the 2 to 255 `labels` |
+| `ai_decide(input, questions [, options])` | `Struct` with one field per question |
+
+- `input` can be text, which is sent as is, or a struct, list or map, which is sent as JSON. Other types are cast to text, and binary fails the query. A NULL input gives NULL and sends no request.
+- Every other argument must be a constant, including the `options` MAP. Bad labels, levels or questions fail the query before any request is sent.
+- `labels` and `levels` are a list literal (`['billing', 'technical']`) or a JSON string. The JSON can be an array of names or an object of name to description (or `null`), e.g. `'{"billing": "Payments and refunds", "technical": null}'`.
+- `questions` (for `ai_decide`) is a JSON object of 1 to 200 questions, keyed by name. Each has a `type` (`noul`, `predicate`, `choice` or `score`), optional `instructions` (the name by default), and for `choice` and `score` its `criteria`, in the same format as `labels`.
+- `ai_decide` fields: `noul` gives `{probability}`, `choice` gives `{choice, confidence, probabilities}`, and `score` gives `{score, confidence, probabilities}`. `probabilities` is a `Map<Utf8, Float64>` of option or level to probability.
+- `options` is an optional `MAP<STRING, STRING>`, e.g. `ai_if(body, 'is spam', MAP('model', 'nimble', 'on_error', 'null'))`. Keys are case-insensitive, a NULL value counts as not set, and unknown keys fail the query.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `model` | `datafusion_ai_functions.decision_model` | Decision model. One of them must be set. |
+| `on_error` | `datafusion_ai_functions.fail_on_error` | `'fail'` fails the query, `'null'` returns NULL. When the model declines a question, that's an error too. With `'null'`, the row is NULL, or in `ai_decide` only that question's field is. |
+| `instructions` | `Which label best fits the input?` | `ai_decide_classify` only: the question asked about the labels |
+- Each non-NULL row sends one request, and identical inputs in a batch are asked once. `ai_decide` asks all of its questions in a single request. Two separate functions on the same input still send two requests.
+- DataFusion may copy a call once for each field you access, e.g. for `d['a']` and `d['b']`. The copies reuse the answers of the call just before them, so they don't send the requests again. Because of that, an identical call (same function, arguments, settings and batch) within 5 seconds also reuses those answers.
+- `datafusion_ai_functions.system_prompt`, `temperature` and `max_tokens` aren't used.
+
+### Decision endpoint
+
+| `decision_api` | Request |
+| --- | --- |
+| `openai` (default) | `POST {decision_endpoint}/decisions` (OpenAI Decisions API) |
+| `systemone` | `POST {decision_endpoint}/systemone` (Ollama, e.g. `nimble`) |
+
+`decision_endpoint` and `decision_api_token` fall back to `endpoint` and `api_token`. Timeouts, retries and `max_concurrency` are the same as for the chat functions.
+
 ### ai_parse_document & ai_extract
 
 To be added soon
@@ -202,7 +272,11 @@ Options are DataFusion session config options under the `datafusion_ai_functions
 | `datafusion_ai_functions.system_prompt` | empty | Optional system message for `ai_query` and `ai_complete` |
 | `datafusion_ai_functions.max_tokens` | unset | Passed as `max_completion_tokens` |
 | `datafusion_ai_functions.temperature` | unset | Sampling temperature |
-| `datafusion_ai_functions.default_model` | empty | Model used by all functions unless a call sets the `model` option. Either one must be set. |
+| `datafusion_ai_functions.default_model` | empty | Model used by all chat functions unless a call sets the `model` option. Either one must be set. |
+| `datafusion_ai_functions.decision_api` | `openai` | `openai` or `systemone`, see [Decision endpoint](#decision-endpoint) |
+| `datafusion_ai_functions.decision_endpoint` | empty | Base URL for decision functions. When empty, `endpoint` is used. |
+| `datafusion_ai_functions.decision_api_token` | empty | Token for decision functions. When empty, `api_token` is used. |
+| `datafusion_ai_functions.decision_model` | empty | Decision model used unless a call sets the `model` option |
 
 The HTTP client is cached and reused across batches and queries, and `register_ai_functions` shares one client between all functions. A new client is built only for a new combination of `endpoint`, `api_token`, `timeout_ms` and `max_retries`. The last few combinations are kept.
 
@@ -241,6 +315,12 @@ ollama pull qwen2.5:14b-instruct
 cargo run --example classify
 cargo run --example summarize
 cargo run --example sentiment
+```
+
+To run the decision function examples (defaults to `nimble` on local Ollama's `/v1/systemone`):
+
+```sh
+cargo run --example decisions
 ```
 
 ## Tests

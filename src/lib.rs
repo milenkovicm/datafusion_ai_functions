@@ -7,6 +7,15 @@
 //! - `ai_summarize(content [, max_words])`
 //! - `ai_analyze_sentiment(content)`
 //!
+//! and by a decision model endpoint (OpenAI `/decisions` or Ollama
+//! `/systemone`, see `datafusion_ai_functions.decision_api`):
+//!
+//! - `ai_probability(input, condition [, options])`
+//! - `ai_if(input, condition [, options])`
+//! - `ai_score(input, instructions, levels [, options])`
+//! - `ai_decide_classify(input, labels [, options])`
+//! - `ai_decide(input, questions [, options])`
+//!
 //! ```sql
 //! SET datafusion_ai_functions.endpoint = 'http://localhost:8000/v1';
 //! SET datafusion_ai_functions.api_token = 'sk-...';
@@ -17,6 +26,12 @@
 //! SELECT ai_classify(text, '["urgent", "not_urgent"]') AS urgency FROM docs;
 //! SELECT ai_summarize(text, 20) AS summary FROM docs;
 //! SELECT ai_analyze_sentiment(text) AS sentiment FROM docs;
+//!
+//! SET datafusion_ai_functions.decision_api = 'systemone';
+//! SET datafusion_ai_functions.decision_endpoint = 'http://localhost:11434/v1';
+//! SET datafusion_ai_functions.decision_model = 'nimble';
+//! SELECT id FROM tickets WHERE ai_if(body, 'The customer asks for a refund');
+//! SELECT ai_decide_classify(body, ['billing', 'technical'], MAP('on_error', 'null')) FROM tickets;
 //! ```
 //!
 //! AI functions are endpoint bound, so evaluating them on many partitions
@@ -38,6 +53,7 @@
 //! ```
 
 mod config;
+mod decision;
 mod openai;
 mod optimizer;
 mod udf;
@@ -53,7 +69,10 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 pub use config::AiQueryConfig;
 use openai::ClientCache;
 pub use optimizer::AiSinglePartition;
-pub use udf::{AiAnalyzeSentiment, AiClassify, AiComplete, AiQuery, AiSummarize};
+pub use udf::{
+    AiAnalyzeSentiment, AiClassify, AiComplete, AiDecide, AiDecideClassify, AiIf, AiProbability,
+    AiQuery, AiScore, AiSummarize,
+};
 
 fn into_udf<T: AsyncScalarUDFImpl + 'static>(udf: T) -> ScalarUDF {
     AsyncScalarUDF::new(Arc::new(udf)).into_scalar_udf()
@@ -84,6 +103,31 @@ pub fn ai_analyze_sentiment_udf() -> ScalarUDF {
     into_udf(AiAnalyzeSentiment::new())
 }
 
+/// Create the `ai_probability` scalar UDF.
+pub fn ai_probability_udf() -> ScalarUDF {
+    into_udf(AiProbability::new())
+}
+
+/// Create the `ai_if` scalar UDF.
+pub fn ai_if_udf() -> ScalarUDF {
+    into_udf(AiIf::new())
+}
+
+/// Create the `ai_score` scalar UDF.
+pub fn ai_score_udf() -> ScalarUDF {
+    into_udf(AiScore::new())
+}
+
+/// Create the `ai_decide_classify` scalar UDF.
+pub fn ai_decide_classify_udf() -> ScalarUDF {
+    into_udf(AiDecideClassify::new())
+}
+
+/// Create the `ai_decide` scalar UDF.
+pub fn ai_decide_udf() -> ScalarUDF {
+    into_udf(AiDecide::new())
+}
+
 /// Session config with the given `ai_query` options registered.
 pub fn session_config_with_ai_query(cfg: AiQueryConfig) -> SessionConfig {
     SessionConfig::new().with_option_extension(cfg)
@@ -97,7 +141,8 @@ pub fn register_ai_query(ctx: &SessionContext) {
 }
 
 /// Register all AI functions (`ai_query`, `ai_complete`, `ai_classify`,
-/// `ai_summarize`, `ai_analyze_sentiment`) and the default
+/// `ai_summarize`, `ai_analyze_sentiment`, `ai_probability`, `ai_if`,
+/// `ai_score`, `ai_decide_classify`, `ai_decide`) and the default
 /// `datafusion_ai_functions.*` options (if absent) on the context. The functions share
 /// one HTTP client (connection pool).
 pub fn register_ai_functions(ctx: &SessionContext) {
@@ -107,7 +152,16 @@ pub fn register_ai_functions(ctx: &SessionContext) {
     ctx.register_udf(into_udf(AiComplete::with_clients(Arc::clone(&clients))));
     ctx.register_udf(into_udf(AiClassify::with_clients(Arc::clone(&clients))));
     ctx.register_udf(into_udf(AiSummarize::with_clients(Arc::clone(&clients))));
-    ctx.register_udf(into_udf(AiAnalyzeSentiment::with_clients(clients)));
+    ctx.register_udf(into_udf(AiAnalyzeSentiment::with_clients(Arc::clone(
+        &clients,
+    ))));
+    ctx.register_udf(into_udf(AiProbability::with_clients(Arc::clone(&clients))));
+    ctx.register_udf(into_udf(AiIf::with_clients(Arc::clone(&clients))));
+    ctx.register_udf(into_udf(AiScore::with_clients(Arc::clone(&clients))));
+    ctx.register_udf(into_udf(AiDecideClassify::with_clients(Arc::clone(
+        &clients,
+    ))));
+    ctx.register_udf(into_udf(AiDecide::with_clients(clients)));
 }
 
 /// Add the [`AiSinglePartition`] rule to the builder's physical optimizer

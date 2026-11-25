@@ -32,6 +32,15 @@ extensions_options! {
         /// If true (and the `AiSinglePartition` physical optimizer rule is
         /// installed), AI functions are evaluated on a single partition
         pub single_partition: bool, default = true
+        /// Base url for decision functions (`ai_if`, `ai_decide`, ...); empty means `endpoint`
+        pub decision_endpoint: String, default = String::new()
+        /// API token for decision functions; empty means `api_token`
+        pub decision_api_token: String, default = String::new()
+        /// Decision model used unless a call sets the `model` option
+        pub decision_model: String, default = String::new()
+        /// Decision API: `openai` (`POST {base}/decisions`) or `systemone`
+        /// (`POST {base}/systemone`, served by Ollama)
+        pub decision_api: String, default = "openai".to_string()
     }
 }
 
@@ -49,6 +58,19 @@ impl AiQueryConfig {
         }
         if let Ok(v) = std::env::var("OPENAI_API_KEY") {
             cfg.api_token = v;
+        }
+        cfg
+    }
+
+    /// This config with `endpoint` and `api_token` replaced by
+    /// `decision_endpoint` and `decision_api_token` where those are set.
+    pub(crate) fn decision_client_config(&self) -> Self {
+        let mut cfg = self.clone();
+        if !self.decision_endpoint.trim().is_empty() {
+            cfg.endpoint = self.decision_endpoint.clone();
+        }
+        if !self.decision_api_token.is_empty() {
+            cfg.api_token = self.decision_api_token.clone();
         }
         cfg
     }
