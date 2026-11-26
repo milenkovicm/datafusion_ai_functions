@@ -4,6 +4,7 @@ AI SQL functions for [Apache DataFusion](https://datafusion.apache.org/). They c
 
 > [!WARNING]
 > This is a vibe-coded solution built as a proof of concept. It has not been fully reviewed, so use it with caution.
+
 > [!NOTE]
 > [spark_ai_functions](https://github.com/milenkovicm/spark_ai_functions) provides similar functionality for [Apache Spark](https://spark.apache.org).
 
