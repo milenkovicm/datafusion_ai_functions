@@ -292,3 +292,47 @@ async fn plan_uses_async_exec() {
     let plan = pretty_format_batches(&batches).unwrap().to_string();
     assert!(plan.contains("AsyncFuncExec"), "{plan}");
 }
+
+fn length_response(content: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+        "choices": [{"index": 0, "finish_reason": "length",
+            "message": {"role": "assistant", "content": content}}]
+    }))
+}
+
+#[tokio::test]
+async fn empty_answer_at_token_limit_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(length_response(""))
+        .mount(&server)
+        .await;
+    let ctx = ctx_for(&server).await;
+    ctx.sql("SET datafusion_ai_functions.default_model = 'm'")
+        .await
+        .unwrap();
+
+    let err = query_err(&ctx, "SELECT ai_query('hi')").await;
+    assert!(
+        err.contains("hit the token limit before answering"),
+        "{err}"
+    );
+    let out = query_col(&ctx, "SELECT ai_query('hi', MAP('failOnError', 'false'))").await;
+    assert_eq!(out, vec![None]);
+}
+
+#[tokio::test]
+async fn cut_off_answer_is_kept() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(length_response("Once upon a"))
+        .mount(&server)
+        .await;
+    let ctx = ctx_for(&server).await;
+    ctx.sql("SET datafusion_ai_functions.default_model = 'm'")
+        .await
+        .unwrap();
+    let out = query_col(&ctx, "SELECT ai_query('hi')").await;
+    assert_eq!(out, vec![Some("Once upon a".to_string())]);
+}

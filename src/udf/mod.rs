@@ -411,25 +411,35 @@ pub(crate) fn null_on_error<T>(name: &str, fail_on_error: bool, r: Result<T>) ->
 /// Evaluate `f` for each row in `0..num_rows` with at most `concurrency`
 /// futures in flight, and collect the results in row order. The first error
 /// stops the loop, cancels in-flight requests and fails the call.
+///
+/// Futures complete in any order, and a new one starts as soon as any
+/// finishes, so a slow (e.g. retrying) row doesn't hold up the others.
 pub(crate) async fn map_rows_with<T, F, Fut>(
     concurrency: usize,
     num_rows: usize,
-    f: F,
+    mut f: F,
 ) -> Result<Vec<T>>
 where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    let mut out = Vec::with_capacity(num_rows);
+    let mut slots: Vec<Option<T>> = std::iter::repeat_with(|| None).take(num_rows).collect();
     let mut results = pin!(
         futures::stream::iter(0..num_rows)
-            .map(f)
-            .buffered(concurrency.max(1))
+            .map(|i| {
+                let fut = f(i);
+                async move { (i, fut.await) }
+            })
+            .buffer_unordered(concurrency.max(1))
     );
-    while let Some(r) = results.next().await {
-        out.push(r?);
+    while let Some((i, r)) = results.next().await {
+        slots[i] = Some(r?);
     }
-    Ok(out)
+    // The stream yields every row once unless an error returned early.
+    Ok(slots
+        .into_iter()
+        .map(|s| s.expect("every row is evaluated"))
+        .collect())
 }
 
 /// Like [`map_rows_with`], but `f` is evaluated once per distinct `key`
@@ -572,6 +582,58 @@ mod tests {
         .unwrap();
         assert_eq!(calls, [0, 3]);
         assert_eq!(out, [Some(0), Some(0), None, Some(30), Some(0)]);
+    }
+
+    /// Row 0 finishes only after the last row has started. With ordered
+    /// buffering, finished rows waiting behind row 0 would fill the
+    /// concurrency limit and the last row would never start.
+    #[tokio::test]
+    async fn slow_row_does_not_hold_up_others() {
+        use futures::task::AtomicWaker;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::Poll;
+
+        let num_rows = 6;
+        let last_started = AtomicBool::new(false);
+        let waker = AtomicWaker::new();
+        let run = map_rows_with(2, num_rows, |i| {
+            let (last_started, waker) = (&last_started, &waker);
+            async move {
+                if i == 0 {
+                    futures::future::poll_fn(|cx| {
+                        waker.register(cx.waker());
+                        if last_started.load(Ordering::SeqCst) {
+                            Poll::Ready(())
+                        } else {
+                            Poll::Pending
+                        }
+                    })
+                    .await;
+                } else if i == num_rows - 1 {
+                    last_started.store(true, Ordering::SeqCst);
+                    waker.wake();
+                }
+                Ok(i * 10)
+            }
+        });
+        let out = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("row 0 held up the other rows")
+            .unwrap();
+        assert_eq!(out, [0, 10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn keeps_row_order_and_stops_on_error() {
+        let out = futures::executor::block_on(map_rows_with(3, 4, |i| async move {
+            Ok::<_, datafusion::error::DataFusionError>(i)
+        }))
+        .unwrap();
+        assert_eq!(out, [0, 1, 2, 3]);
+        let err = futures::executor::block_on(map_rows_with(3, 4, |i| async move {
+            if i == 2 { exec_err!("row {i}") } else { Ok(i) }
+        }));
+        assert!(err.unwrap_err().to_string().contains("row 2"));
     }
 
     #[test]

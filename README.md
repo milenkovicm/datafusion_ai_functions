@@ -55,6 +55,7 @@ This section is about the chat functions. The decision functions have their own 
 - Unknown option keys, invalid values, or no model configured fail the query before any request is sent.
 - The model is the `model` option where the function has one, else `datafusion_ai_functions.default_model`.
 - Request errors follow `datafusion_ai_functions.fail_on_error`, or the per-call option where there is one: either the query fails or the row is NULL.
+- An answer that hits the token limit before any text counts as a request error. This happens with reasoning models that spend `max_tokens` on thinking. An answer cut off part way is returned as is, with a warning in the log.
 - All functions return `Utf8`. Structured results are JSON strings; parse them with JSON functions or `CAST` them.
 - All functions are `Volatile`, so DataFusion never constant-folds or caches them.
 
@@ -241,7 +242,7 @@ FROM (SELECT id, ai_decide(body, '{
 | `on_error` | `datafusion_ai_functions.fail_on_error` | `'fail'` fails the query, `'null'` returns NULL. When the model declines a question, that's an error too. With `'null'`, the row is NULL, or in `ai_decide` only that question's field is. |
 | `instructions` | `Which label best fits the input?` | `ai_decide_classify` only: the question asked about the labels |
 - Each non-NULL row sends one request, and identical inputs in a batch are asked once. `ai_decide` asks all of its questions in a single request. Two separate functions on the same input still send two requests.
-- DataFusion may copy a call once for each field you access, e.g. for `d['a']` and `d['b']`. The copies reuse the answers of the call just before them, so they don't send the requests again. Because of that, an identical call (same function, arguments, settings and batch) within 5 seconds also reuses those answers.
+- DataFusion may copy a call once for each field you access, e.g. for `d['a']` and `d['b']`. The copies reuse the answers of a recent identical call, so they don't send the requests again. Each function keeps its last 8 calls for 5 seconds, so an identical call (same function, arguments, settings and batch) within 5 seconds also reuses those answers.
 - `datafusion_ai_functions.system_prompt`, `temperature` and `max_tokens` aren't used.
 
 ### Decision endpoint
@@ -277,6 +278,7 @@ Options are DataFusion session config options under the `datafusion_ai_functions
 | `datafusion_ai_functions.decision_endpoint` | empty | Base URL for decision functions. When empty, `endpoint` is used. |
 | `datafusion_ai_functions.decision_api_token` | empty | Token for decision functions. When empty, `api_token` is used. |
 | `datafusion_ai_functions.decision_model` | empty | Decision model used unless a call sets the `model` option |
+| `datafusion_ai_functions.single_partition` | `true` | Evaluate AI functions on one partition. Only has an effect when the `AiSinglePartition` rule is installed, see [Single partition](#single-partition). |
 
 The HTTP client is cached and reused across batches and queries, and `register_ai_functions` shares one client between all functions. A new client is built only for a new combination of `endpoint`, `api_token`, `timeout_ms` and `max_retries`. The last few combinations are kept.
 
@@ -284,12 +286,47 @@ The HTTP client is cached and reused across batches and queries, and `register_a
 
 Rows are **not** batched into API calls. With `ai_query` and `ai_complete`, each non-NULL row sends its own chat completion request, so 1,000 rows means 1,000 requests.
 
-- At most `max_concurrency` requests are in flight at once. When one finishes, the next row's request starts, so a slow or retrying request doesn't hold up the others.
+- At most `max_concurrency` requests are in flight at once. When any one finishes, the next row's request starts, so a slow or retrying request doesn't hold up the others.
+- `max_concurrency` applies per partition. A query that evaluates a function on 8 partitions can have 8 × `max_concurrency` requests in flight, unless the [single partition](#single-partition) rule is installed.
 - Results keep the row order.
 - With `fail_on_error = true`, the first failed request stops the call: no more requests are sent and in-flight ones are cancelled.
 - `ai_classify`, `ai_analyze_sentiment` and `ai_summarize` ask identical inputs once per record batch, and every matching row gets that answer. Inputs count as identical when the text and the settings (labels and options, or `max_words`) are the same. `ai_query` and `ai_complete` don't deduplicate, so a value that appears many times costs one request per row.
 
 The Chat Completions API has no multi-prompt request. The OpenAI Batch API is asynchronous (it can take up to 24 hours), so it doesn't fit a query running inside a UDF.
+
+### Single partition
+
+AI functions are limited by the model endpoint, not by local CPU, so running them on many partitions mostly multiplies the requests in flight. The `AiSinglePartition` physical optimizer rule merges the input of every `AsyncFuncExec` that calls an AI function into one partition, which makes `max_concurrency` the limit for the whole query.
+
+- It inserts a `CoalescePartitionsExec`, or a `SortPreservingMergeExec` when the input is sorted, below the `AsyncFuncExec`.
+- A round robin repartition of a single partition is removed instead.
+- If the `AsyncFuncExec` output was hash partitioned, the hash partitioning is restored above it.
+- Plans without AI functions aren't changed.
+
+Physical optimizer rules can only be set while the session state is built, so `register_ai_functions` can't install it. Use `ai_session_context`, which also registers all functions:
+
+```rust
+use datafusion::prelude::SessionConfig;
+use datafusion_ai_functions::ai_session_context;
+
+let ctx = ai_session_context(SessionConfig::new());
+```
+
+Or add the rule to your own `SessionStateBuilder` with `with_ai_optimizer_rules`:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_ai_functions::{register_ai_functions, with_ai_optimizer_rules};
+
+let builder = SessionStateBuilder::new()
+    .with_config(SessionConfig::new())
+    .with_default_features();
+let ctx = SessionContext::new_with_state(with_ai_optimizer_rules(builder).build());
+register_ai_functions(&ctx);
+```
+
+With the rule installed, `SET datafusion_ai_functions.single_partition = false` turns it off for a session.
 
 ## Running the demo
 

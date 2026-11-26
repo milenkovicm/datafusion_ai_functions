@@ -354,7 +354,7 @@ fn return_field<F: DecisionFn>(args: ReturnFieldArgs) -> Result<FieldRef> {
 
 async fn invoke<F: DecisionFn>(
     clients: &ClientCache,
-    last_call: &LastCall,
+    recent_calls: &RecentCalls,
     args: ScalarFunctionArgs,
 ) -> Result<ColumnarValue> {
     let values = args
@@ -395,7 +395,7 @@ async fn invoke<F: DecisionFn>(
         questions: questions.clone(),
         fail_on_error,
     };
-    let rows = match last_call.get(&key, &inputs) {
+    let rows = match recent_calls.get(&key, &inputs) {
         Some(rows) => rows,
         None => {
             let client = clients.get(&client_cfg)?;
@@ -408,7 +408,7 @@ async fn invoke<F: DecisionFn>(
                 fail_on_error,
             };
             let rows = call.run(cfg.max_concurrency, &inputs).await?;
-            last_call.put(key, inputs, rows.clone());
+            recent_calls.put(key, inputs, rows.clone());
             rows
         }
     };
@@ -417,25 +417,30 @@ async fn invoke<F: DecisionFn>(
 
 type Rows = Vec<Option<Arc<Vec<Answer>>>>;
 
-/// How long [`LastCall`] answers stay usable.
-const LAST_CALL_TTL: Duration = Duration::from_secs(5);
+/// How long [`RecentCalls`] answers stay usable.
+const RECENT_CALL_TTL: Duration = Duration::from_secs(5);
+/// Number of recent calls kept. Several partitions can evaluate the same
+/// function at once, each on its own batch, so one entry isn't enough.
+const MAX_RECENT_CALLS: usize = 8;
 
-/// The answers of a function's most recent call.
+/// The answers of a function's most recent calls.
 ///
 /// DataFusion's `push_down_leaf_projections` rule can copy a call once per
 /// field access: `SELECT d['a'], d['b'] FROM (SELECT ai_decide(...) AS d ...)`
 /// evaluates `ai_decide` twice. `AsyncFuncExec` runs the copies back to back
 /// on the same batch, so the copies are answered from here instead of
-/// sending every request again.
+/// sending every request again. Entries older than [`RECENT_CALL_TTL`] are
+/// dropped, so they don't keep a batch's inputs in memory.
 #[derive(Default)]
-pub(crate) struct LastCall {
-    inner: Mutex<Option<CachedCall>>,
+pub(crate) struct RecentCalls {
+    /// Oldest first.
+    inner: Mutex<Vec<CachedCall>>,
 }
 
 /// Doesn't print the cached inputs.
-impl std::fmt::Debug for LastCall {
+impl std::fmt::Debug for RecentCalls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LastCall").finish_non_exhaustive()
+        f.debug_struct("RecentCalls").finish_non_exhaustive()
     }
 }
 
@@ -444,6 +449,12 @@ struct CachedCall {
     inputs: Vec<Option<String>>,
     rows: Rows,
     at: Instant,
+}
+
+impl CachedCall {
+    fn matches(&self, key: &CallKey, inputs: &[Option<String>]) -> bool {
+        self.key == *key && self.inputs == inputs
+    }
 }
 
 /// Everything besides the inputs that the answers depend on.
@@ -456,17 +467,29 @@ struct CallKey {
     fail_on_error: bool,
 }
 
-impl LastCall {
+impl RecentCalls {
+    /// The locked entries, without expired ones.
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<CachedCall>> {
+        let mut entries = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        entries.retain(|c| c.at.elapsed() < RECENT_CALL_TTL);
+        entries
+    }
+
     fn get(&self, key: &CallKey, inputs: &[Option<String>]) -> Option<Rows> {
-        let cached = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        cached
-            .as_ref()
-            .filter(|c| c.at.elapsed() < LAST_CALL_TTL && c.key == *key && c.inputs == inputs)
+        self.entries()
+            .iter()
+            .rev()
+            .find(|c| c.matches(key, inputs))
             .map(|c| c.rows.clone())
     }
 
     fn put(&self, key: CallKey, inputs: Vec<Option<String>>, rows: Rows) {
-        *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedCall {
+        let mut entries = self.entries();
+        entries.retain(|c| !c.matches(&key, &inputs));
+        if entries.len() >= MAX_RECENT_CALLS {
+            entries.remove(0);
+        }
+        entries.push(CachedCall {
             key,
             inputs,
             rows,
@@ -584,7 +607,7 @@ macro_rules! decision_udf {
         pub struct $t {
             signature: datafusion::logical_expr::Signature,
             clients: std::sync::Arc<crate::openai::ClientCache>,
-            last_call: crate::udf::decision::LastCall,
+            recent_calls: crate::udf::decision::RecentCalls,
         }
 
         impl Default for $t {
@@ -604,7 +627,7 @@ macro_rules! decision_udf {
                 Self {
                     signature: crate::udf::decision::signature::<$f>(),
                     clients,
-                    last_call: Default::default(),
+                    recent_calls: Default::default(),
                 }
             }
         }
@@ -668,7 +691,7 @@ macro_rules! decision_udf {
                 &self,
                 args: datafusion::logical_expr::ScalarFunctionArgs,
             ) -> datafusion::common::Result<datafusion::logical_expr::ColumnarValue> {
-                crate::udf::decision::invoke::<$f>(&self.clients, &self.last_call, args).await
+                crate::udf::decision::invoke::<$f>(&self.clients, &self.recent_calls, args).await
             }
         }
     };
@@ -733,6 +756,40 @@ mod tests {
             &DataType::Int32,
         ));
         assert!(criteria(ints, 2, 10).is_err());
+    }
+
+    #[test]
+    fn keeps_recent_calls() {
+        let key = |model: &str| CallKey {
+            endpoint: "e".into(),
+            api: DecisionApi::SystemOne,
+            model: model.into(),
+            questions: Vec::new(),
+            fail_on_error: true,
+        };
+        let inputs = |s: &str| vec![Some(s.to_string())];
+        let rows = |p: f64| vec![Some(Arc::new(vec![Answer::Noul { probability: p }]))];
+        let calls = RecentCalls::default();
+        // Two partitions' batches, interleaved.
+        calls.put(key("m"), inputs("a"), rows(0.1));
+        calls.put(key("m"), inputs("b"), rows(0.2));
+        assert_eq!(calls.get(&key("m"), &inputs("a")), Some(rows(0.1)));
+        assert_eq!(calls.get(&key("m"), &inputs("b")), Some(rows(0.2)));
+        assert_eq!(calls.get(&key("other"), &inputs("a")), None);
+        // Re-putting replaces instead of duplicating.
+        calls.put(key("m"), inputs("a"), rows(0.3));
+        assert_eq!(calls.get(&key("m"), &inputs("a")), Some(rows(0.3)));
+        assert_eq!(calls.entries().len(), 2);
+        // The oldest entries go first.
+        for i in 0..MAX_RECENT_CALLS {
+            calls.put(key("m"), inputs(&i.to_string()), rows(0.0));
+        }
+        assert_eq!(calls.entries().len(), MAX_RECENT_CALLS);
+        assert_eq!(calls.get(&key("m"), &inputs("a")), None);
+        // Expired entries are dropped.
+        calls.entries()[0].at -= RECENT_CALL_TTL;
+        assert_eq!(calls.get(&key("m"), &inputs("0")), None);
+        assert_eq!(calls.entries().len(), MAX_RECENT_CALLS - 1);
     }
 
     #[test]

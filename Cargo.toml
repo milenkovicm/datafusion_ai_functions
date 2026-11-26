@@ -15,5 +15,5 @@ log = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 wiremock = "0.6"

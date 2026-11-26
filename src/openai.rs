@@ -10,9 +10,9 @@ use async_openai::middleware::retry::OpenAIRetryLayer;
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CompletionUsage, CreateChatCompletionRequestArgs,
-    ResponseFormat,
+    FinishReason, ResponseFormat,
 };
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, Result, exec_err};
 use tower::Layer;
 
 use crate::config::AiQueryConfig;
@@ -177,20 +177,42 @@ pub async fn chat_full(
     let request = builder.build().map_err(ext)?;
 
     let resp = client.chat().create(request).await.map_err(ext)?;
-    let content = resp
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|c| c.message.content)
-        .ok_or_else(|| {
-            DataFusionError::Execution(format!("model '{}' returned no content", req.model))
-        })?;
+    let (content, finish_reason) = match resp.choices.into_iter().next() {
+        Some(c) => (c.message.content, c.finish_reason),
+        None => (None, None),
+    };
+    let content = check_content(req.model, content, finish_reason)?;
     Ok(ChatResponse {
         content,
         created: resp.created,
         model: resp.model,
         usage: resp.usage,
     })
+}
+
+/// The answer, or an error when there is none. An answer that hit the token
+/// limit before any text (e.g. a reasoning model that spent the limit on
+/// thinking) is an error; one cut off part way is kept with a warning.
+fn check_content(
+    model: &str,
+    content: Option<String>,
+    finish_reason: Option<FinishReason>,
+) -> Result<String> {
+    let truncated = finish_reason == Some(FinishReason::Length);
+    match content {
+        Some(c) if !c.is_empty() => {
+            if truncated {
+                log::warn!("model '{model}' hit the token limit, the answer is cut off");
+            }
+            Ok(c)
+        }
+        _ if truncated => exec_err!(
+            "model '{model}' hit the token limit before answering; raise max_tokens \
+             (reasoning models spend tokens on thinking first)"
+        ),
+        Some(c) => Ok(c),
+        None => exec_err!("model '{model}' returned no content"),
+    }
 }
 
 #[cfg(test)]
@@ -203,6 +225,24 @@ mod tests {
             api_token: "sk-secret".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn checks_content() {
+        let check = |c: Option<&str>, f| check_content("m", c.map(String::from), f);
+        let length = Some(FinishReason::Length);
+        assert_eq!(check(Some("hi"), Some(FinishReason::Stop)).unwrap(), "hi");
+        assert_eq!(check(Some("cut"), length).unwrap(), "cut");
+        assert_eq!(check(Some(""), None).unwrap(), "");
+        for content in [Some(""), None] {
+            let err = check(content, length).unwrap_err().to_string();
+            assert!(
+                err.contains("hit the token limit before answering"),
+                "{err}"
+            );
+        }
+        let err = check(None, None).unwrap_err().to_string();
+        assert!(err.contains("returned no content"), "{err}");
     }
 
     #[test]
