@@ -5,12 +5,10 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
-      - "**.yaml"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**.md"
-      - "**.yaml"
   workflow_dispatch:
 
 env:
@@ -27,7 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt
+          components: rustfmt, clippy
       # make cargo format to fail first
       # before bringing other things, and spending time
       # compiling
@@ -37,6 +35,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Cargo Clippy
+        run: cargo clippy --all-targets -- -D warnings
       - name: Cargo Test
         # should be faster than compiling tests again in
         # test phase

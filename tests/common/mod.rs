@@ -28,6 +28,28 @@ impl Respond for Echo {
     }
 }
 
+/// Answers with the last user message, unchanged.
+pub struct Parrot;
+impl Respond for Parrot {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let prompt = body["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap();
+        completion("m", prompt)
+    }
+}
+
+/// Create table `r(id, txt)` = (1,'x'),(2,'y'),(3,'x'),(4,NULL),(5,'x'):
+/// four non-NULL values, two of them distinct.
+pub async fn create_repeated(ctx: &SessionContext) {
+    ctx.sql(
+        "CREATE TABLE r(id INT, txt VARCHAR) AS VALUES (1,'x'),(2,'y'),(3,'x'),(4,NULL),(5,'x')",
+    )
+    .await
+    .unwrap();
+}
+
 /// Always answers with the given content.
 pub struct Fixed(pub &'static str);
 impl Respond for Fixed {

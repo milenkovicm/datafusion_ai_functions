@@ -270,3 +270,26 @@ async fn plan_uses_async_exec() {
     let plan = pretty_format_batches(&batches).unwrap().to_string();
     assert!(plan.contains("AsyncFuncExec"), "{plan}");
 }
+
+#[tokio::test]
+async fn identical_contents_are_asked_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(common::Parrot)
+        .expect(2)
+        .mount(&server)
+        .await;
+    let ctx = ctx_for(&server).await;
+    ctx.sql("SET datafusion_ai_functions.default_model = 'm'")
+        .await
+        .unwrap();
+    common::create_repeated(&ctx).await;
+
+    let out = query_col(
+        &ctx,
+        r#"SELECT ai_classify(txt, '["x", "y"]') FROM r ORDER BY id"#,
+    )
+    .await;
+    let (x, y) = (Some("x".to_string()), Some("y".to_string()));
+    assert_eq!(out, vec![x.clone(), y, x.clone(), None, x]);
+}

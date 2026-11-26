@@ -50,7 +50,7 @@ ctx.register_udf(ai_query_udf());
 This section is about the chat functions. The decision functions have their own rules, see [Decision functions](#decision-functions).
 
 - Text arguments accept `Utf8`, `LargeUtf8` and `Utf8View`. A NULL text gives a NULL result and sends no request.
-- Each non-NULL row sends one chat completion request. The result is the content of the first choice.
+- Each non-NULL row sends one chat completion request. `ai_classify`, `ai_analyze_sentiment` and `ai_summarize` instead ask each distinct input (with the same settings) once per record batch. The result is the content of the first choice.
 - `options` is an optional `MAP<STRING, STRING>`. Keys are case-insensitive, and a NULL value counts as not set. Options are read per row, so `MAP('model', model_col)` lets each row use a different model.
 - Unknown option keys, invalid values, or no model configured fail the query before any request is sent.
 - The model is the `model` option where the function has one, else `datafusion_ai_functions.default_model`.
@@ -282,12 +282,12 @@ The HTTP client is cached and reused across batches and queries, and `register_a
 
 ### Request scheduling
 
-Rows are **not** batched into API calls. Each non-NULL row sends its own chat completion request, so 1,000 rows means 1,000 requests.
+Rows are **not** batched into API calls. With `ai_query` and `ai_complete`, each non-NULL row sends its own chat completion request, so 1,000 rows means 1,000 requests.
 
 - At most `max_concurrency` requests are in flight at once. When one finishes, the next row's request starts, so a slow or retrying request doesn't hold up the others.
 - Results keep the row order.
 - With `fail_on_error = true`, the first failed request stops the call: no more requests are sent and in-flight ones are cancelled.
-- Identical inputs aren't deduplicated. A value that appears many times in a column costs one request per row.
+- `ai_classify`, `ai_analyze_sentiment` and `ai_summarize` ask identical inputs once per record batch, and every matching row gets that answer. Inputs count as identical when the text and the settings (labels and options, or `max_words`) are the same. `ai_query` and `ai_complete` don't deduplicate, so a value that appears many times costs one request per row.
 
 The Chat Completions API has no multi-prompt request. The OpenAI Batch API is asynchronous (it can take up to 24 hours), so it doesn't fit a query running inside a UDF.
 

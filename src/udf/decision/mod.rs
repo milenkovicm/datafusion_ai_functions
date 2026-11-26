@@ -13,7 +13,6 @@ pub(crate) mod ai_if;
 pub(crate) mod ai_probability;
 pub(crate) mod ai_score;
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,7 +28,7 @@ use datafusion::logical_expr::{
 use serde_json::Value;
 
 use super::{
-    Arg, STRING_TYPES, check_args, is_string_or_null, map_rows_with, non_blank, option_entries,
+    Arg, STRING_TYPES, check_args, is_string_or_null, map_unique_rows, non_blank, option_entries,
     to_utf8,
 };
 use crate::config::AiQueryConfig;
@@ -532,23 +531,12 @@ impl Call<'_> {
         concurrency: usize,
         inputs: &[Option<String>],
     ) -> Result<Vec<Option<Arc<Vec<Answer>>>>> {
-        let mut unique: Vec<&str> = Vec::new();
-        let mut index: HashMap<&str, usize> = HashMap::new();
-        let row_to_unique: Vec<Option<usize>> = inputs
-            .iter()
-            .map(|input| {
-                input.as_deref().map(|s| {
-                    *index.entry(s).or_insert_with(|| {
-                        unique.push(s);
-                        unique.len() - 1
-                    })
-                })
-            })
-            .collect();
-
-        let results = map_rows_with(concurrency, unique.len(), |u| {
-            let input = unique[u];
-            async move {
+        map_unique_rows(
+            concurrency,
+            inputs.len(),
+            |i| inputs[i].as_deref(),
+            |row| async move {
+                let input = inputs[row].as_deref().unwrap_or_default();
                 match self.ask(input).await {
                     Ok(a) => Ok(Some(Arc::new(a))),
                     Err(e) if self.fail_on_error => Err(e),
@@ -557,13 +545,9 @@ impl Call<'_> {
                         Ok(None)
                     }
                 }
-            }
-        })
-        .await?;
-        Ok(row_to_unique
-            .into_iter()
-            .map(|u| u.and_then(|u| results[u].clone()))
-            .collect())
+            },
+        )
+        .await
     }
 
     async fn ask(&self, input: &str) -> Result<Vec<Answer>> {

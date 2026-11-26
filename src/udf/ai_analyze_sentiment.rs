@@ -9,7 +9,7 @@ use datafusion::common::Result;
 use datafusion::logical_expr::async_udf::AsyncScalarUDFImpl;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs};
 
-use super::{Arg, ai_udf, map_rows, null_on_error, resolve_model, utf8_arg};
+use super::{Arg, ai_udf, map_unique_rows, null_on_error, resolve_model, string_array, utf8_arg};
 use crate::config::AiQueryConfig;
 use crate::openai::{ChatRequest, chat};
 
@@ -38,12 +38,11 @@ impl AsyncScalarUDFImpl for AiAnalyzeSentiment {
         let model = resolve_model(&cfg, NAME, None)?;
         let client = self.clients.get(&cfg)?;
 
-        let out = map_rows(cfg.max_concurrency, contents.len(), |i| {
+        // NULL content sends no request; identical contents are asked once.
+        let key = |i: usize| contents.is_valid(i).then(|| contents.value(i));
+        let out = map_unique_rows(cfg.max_concurrency, contents.len(), key, |i| {
             let (client, cfg, contents, model) = (&client, &cfg, &contents, &model);
             async move {
-                if contents.is_null(i) {
-                    return Ok(None);
-                }
                 let req = ChatRequest {
                     model,
                     system: Some(SYSTEM_PROMPT),
@@ -63,7 +62,7 @@ impl AsyncScalarUDFImpl for AiAnalyzeSentiment {
             }
         })
         .await?;
-        Ok(ColumnarValue::Array(out))
+        Ok(ColumnarValue::Array(string_array(out)))
     }
 }
 

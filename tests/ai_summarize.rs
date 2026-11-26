@@ -155,3 +155,39 @@ async fn plan_uses_async_exec() {
     let plan = pretty_format_batches(&batches).unwrap().to_string();
     assert!(plan.contains("AsyncFuncExec"), "{plan}");
 }
+
+#[tokio::test]
+async fn identical_contents_are_asked_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(common::Parrot)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let ctx = ctx_for(&server).await;
+    ctx.sql("SET datafusion_ai_functions.default_model = 'm'")
+        .await
+        .unwrap();
+    common::create_repeated(&ctx).await;
+
+    // Rows 1 and 3 share content and limit; row 5 has the same content but
+    // another limit, so it's asked separately.
+    let out = query_col(
+        &ctx,
+        "SELECT ai_summarize(txt, CASE WHEN id = 5 THEN 10 ELSE 50 END) FROM r ORDER BY id",
+    )
+    .await;
+    let (x, y) = (Some("x".to_string()), Some("y".to_string()));
+    assert_eq!(out, vec![x.clone(), y, x.clone(), None, x]);
+    let limits: Vec<bool> = request_bodies(&server)
+        .await
+        .iter()
+        .map(|b| {
+            b["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("at most 10 words")
+        })
+        .collect();
+    assert_eq!(limits.iter().filter(|l| **l).count(), 1, "{limits:?}");
+}

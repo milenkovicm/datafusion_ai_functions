@@ -3,6 +3,8 @@
 //! `max_words` is a best-effort target (default 50, `0` means no limit). The
 //! result is the summary as plain text.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::{Array, Int64Array};
 use datafusion::arrow::compute::cast;
@@ -13,7 +15,8 @@ use datafusion::logical_expr::async_udf::AsyncScalarUDFImpl;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs};
 
 use super::{
-    Arg, ai_udf, is_integer_or_null, map_rows, memo_rows, null_on_error, resolve_model, utf8_arg,
+    Arg, ai_udf, is_integer_or_null, map_unique_rows, memo_rows, null_on_error, resolve_model,
+    string_array, utf8_arg,
 };
 use crate::config::AiQueryConfig;
 use crate::openai::{ChatRequest, chat};
@@ -53,10 +56,17 @@ impl AsyncScalarUDFImpl for AiSummarize {
         let model = resolve_model(&cfg, NAME, None)?;
         let client = self.clients.get(&cfg)?;
 
-        let out = map_rows(cfg.max_concurrency, contents.len(), |i| {
+        // Rows with the same content and word limit are asked once.
+        let key = |i: usize| {
+            prompts[i]
+                .as_ref()
+                .map(|p| (contents.value(i), Arc::as_ptr(p) as usize))
+        };
+        let out = map_unique_rows(cfg.max_concurrency, contents.len(), key, |i| {
             let (client, cfg, contents, prompts, model) =
                 (&client, &cfg, &contents, &prompts, &model);
             async move {
+                // Only rows with a key, so with a prompt, get here.
                 let Some(system) = &prompts[i] else {
                     return Ok(None);
                 };
@@ -73,7 +83,7 @@ impl AsyncScalarUDFImpl for AiSummarize {
             }
         })
         .await?;
-        Ok(ColumnarValue::Array(out))
+        Ok(ColumnarValue::Array(string_array(out)))
     }
 }
 

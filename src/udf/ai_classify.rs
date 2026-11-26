@@ -10,6 +10,8 @@
 //! {"response":[{"value":"urgent"}],"metadata":{"version":"2.1"},"error_message":null}
 //! ```
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::Array;
 use datafusion::common::{Result, exec_err};
@@ -18,8 +20,8 @@ use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs};
 use serde_json::{Value, json};
 
 use super::{
-    Arg, OptionRows, ai_udf, is_string_or_null, map_rows, memo_rows, non_blank, parse_bool,
-    resolve_model, utf8_arg,
+    Arg, OptionRows, ai_udf, is_string_or_null, map_unique_rows, memo_rows, non_blank, parse_bool,
+    resolve_model, string_array, utf8_arg,
 };
 use crate::config::AiQueryConfig;
 use crate::openai::{ChatRequest, chat};
@@ -60,7 +62,13 @@ impl AsyncScalarUDFImpl for AiClassify {
         )?;
         let client = self.clients.get(&cfg)?;
 
-        let out = map_rows(cfg.max_concurrency, contents.len(), |i| {
+        // Rows with the same content and spec are asked once.
+        let key = |i: usize| {
+            specs[i]
+                .as_ref()
+                .map(|s| (contents.value(i), Arc::as_ptr(s) as usize))
+        };
+        let out = map_unique_rows(cfg.max_concurrency, contents.len(), key, |i| {
             let (client, cfg, contents, specs) = (&client, &cfg, &contents, &specs);
             async move {
                 let Some(spec) = &specs[i] else {
@@ -91,7 +99,7 @@ impl AsyncScalarUDFImpl for AiClassify {
             }
         })
         .await?;
-        Ok(ColumnarValue::Array(out))
+        Ok(ColumnarValue::Array(string_array(out)))
     }
 }
 
@@ -156,7 +164,7 @@ struct RowSpec {
     system_prompt: String,
     labels: Vec<Label>,
     options: ClassifyOptions,
-    /// Render theJSON envelope instead of the plain label.
+    /// Render the JSON envelope instead of the plain label.
     json: bool,
 }
 

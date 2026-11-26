@@ -28,7 +28,7 @@ use crate::config::AiQueryConfig;
 use crate::openai::{ChatRequest, ChatResponse, chat_full};
 
 pub(crate) const NAME: &str = "ai_complete";
-/// `json_schema.name` used `{"type": "json", "schema": ...}`.
+/// `json_schema.name` used for `{"type": "json", "schema": ...}`.
 const SCHEMA_NAME: &str = "response";
 
 ai_udf!(

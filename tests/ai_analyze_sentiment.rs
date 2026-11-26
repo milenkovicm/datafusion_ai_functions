@@ -156,3 +156,25 @@ async fn plan_uses_async_exec() {
     let plan = pretty_format_batches(&batches).unwrap().to_string();
     assert!(plan.contains("AsyncFuncExec"), "{plan}");
 }
+
+#[tokio::test]
+async fn identical_contents_are_asked_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(common::Parrot)
+        .expect(2)
+        .mount(&server)
+        .await;
+    let ctx = ctx_for(&server).await;
+    ctx.sql("SET datafusion_ai_functions.default_model = 'm'")
+        .await
+        .unwrap();
+    common::create_repeated(&ctx).await;
+    ctx.sql("CREATE TABLE s AS SELECT id, CASE txt WHEN 'x' THEN 'positive' WHEN 'y' THEN 'negative' END AS txt FROM r")
+        .await
+        .unwrap();
+
+    let out = query_col(&ctx, "SELECT ai_analyze_sentiment(txt) FROM s ORDER BY id").await;
+    let (p, n) = (Some("positive".to_string()), Some("negative".to_string()));
+    assert_eq!(out, vec![p.clone(), n, p.clone(), None, p]);
+}

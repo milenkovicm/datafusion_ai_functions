@@ -9,7 +9,9 @@ mod ai_query;
 mod ai_summarize;
 mod decision;
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::hash::Hash;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -430,6 +432,60 @@ where
     Ok(out)
 }
 
+/// Like [`map_rows_with`], but `f` is evaluated once per distinct `key`
+/// and every row gets the result of its key. `f` is called with the first
+/// row that has the key. A `None` key gives `None` without calling `f`.
+pub(crate) async fn map_unique_rows<K, T, F, Fut>(
+    concurrency: usize,
+    num_rows: usize,
+    key: impl FnMut(usize) -> Option<K>,
+    mut f: F,
+) -> Result<Vec<Option<T>>>
+where
+    K: Hash + Eq,
+    T: Clone,
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = Result<Option<T>>>,
+{
+    let (first_rows, row_to_unique) = unique_rows(num_rows, key);
+    let results = map_rows_with(concurrency, first_rows.len(), |u| f(first_rows[u])).await?;
+    Ok(row_to_unique
+        .into_iter()
+        .map(|u| u.and_then(|u| results[u].clone()))
+        .collect())
+}
+
+/// Group rows by `key`: the first row of each distinct key, and for every
+/// row the index of its key (`None` for a `None` key). Kept out of
+/// [`map_unique_rows`] so the keys aren't held across an await.
+fn unique_rows<K: Hash + Eq>(
+    num_rows: usize,
+    mut key: impl FnMut(usize) -> Option<K>,
+) -> (Vec<usize>, Vec<Option<usize>>) {
+    let mut first_rows = Vec::new();
+    let mut index: HashMap<K, usize> = HashMap::new();
+    let row_to_unique = (0..num_rows)
+        .map(|i| {
+            key(i).map(|k| {
+                *index.entry(k).or_insert_with(|| {
+                    first_rows.push(i);
+                    first_rows.len() - 1
+                })
+            })
+        })
+        .collect();
+    (first_rows, row_to_unique)
+}
+
+/// Collect optional strings into a `Utf8` array; `None` becomes NULL.
+pub(crate) fn string_array(rows: impl IntoIterator<Item = Option<String>>) -> ArrayRef {
+    let mut builder = StringBuilder::new();
+    for r in rows {
+        builder.append_option(r);
+    }
+    Arc::new(builder.finish())
+}
+
 /// Like [`map_rows_with`], collecting into a `Utf8` array. `Ok(None)`
 /// becomes NULL.
 pub(crate) async fn map_rows<F, Fut>(concurrency: usize, num_rows: usize, f: F) -> Result<ArrayRef>
@@ -437,12 +493,7 @@ where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = Result<Option<String>>>,
 {
-    let rows = map_rows_with(concurrency, num_rows, f).await?;
-    let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 64);
-    for r in rows {
-        builder.append_option(r);
-    }
-    Ok(Arc::new(builder.finish()))
+    Ok(string_array(map_rows_with(concurrency, num_rows, f).await?))
 }
 
 #[cfg(test)]
@@ -503,6 +554,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("must be a number in 0..=1"), "{err}");
+    }
+
+    #[test]
+    fn maps_unique_rows_once() {
+        let keys = [Some(1), Some(1), None, Some(2), Some(1)];
+        let mut calls = Vec::new();
+        let out = futures::executor::block_on(map_unique_rows(
+            4,
+            keys.len(),
+            |i| keys[i],
+            |row| {
+                calls.push(row);
+                async move { Ok(Some(row * 10)) }
+            },
+        ))
+        .unwrap();
+        assert_eq!(calls, [0, 3]);
+        assert_eq!(out, [Some(0), Some(0), None, Some(30), Some(0)]);
     }
 
     #[test]
