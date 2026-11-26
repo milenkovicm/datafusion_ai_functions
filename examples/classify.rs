@@ -27,10 +27,8 @@ async fn main() -> datafusion::error::Result<()> {
         "SET datafusion_ai_functions.endpoint = '{endpoint}'"
     ))
     .await?;
-    ctx.sql(&format!(
-        "SET datafusion_ai_functions.secret = '{token}'"
-    ))
-    .await?;
+    ctx.sql(&format!("SET datafusion_ai_functions.secret = '{token}'"))
+        .await?;
     // ai_classify has no model argument, it uses the session default model.
     ctx.sql(&format!(
         "SET datafusion_ai_functions.default_model = '{model}'"
