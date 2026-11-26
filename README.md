@@ -40,16 +40,16 @@ ctx.sql("SELECT ai_query('Say hi')").await?.show().await?;
 You can also configure it in code instead of with SQL:
 
 ```rust
-use datafusion_ai_functions::{AiQueryConfig, ai_query_udf, session_config_with_ai_query};
+use datafusion_ai_functions::{AiQueryConfig, register_ai_functions, session_config_with_ai_query};
 
 let mut cfg = AiQueryConfig::from_env(); // reads OPENAI_BASE_URL / OPENAI_API_KEY
 cfg.default_model = "gpt-4o-mini".into();
 cfg.max_concurrency = 16;
 let ctx = SessionContext::new_with_config(session_config_with_ai_query(cfg));
-ctx.register_udf(ai_query_udf());
+register_ai_functions(&ctx); // keeps the config above, adds defaults only if none is set
 ```
 
-`register_ai_query` and `ai_query_udf` only register `ai_query`. Use `ai_complete_udf()`, `ai_classify_udf()`, `ai_summarize_udf()`, `ai_analyze_sentiment_udf()`, `ai_probability_udf()`, `ai_if_udf()`, `ai_score_udf()`, `ai_decide_classify_udf()` and `ai_decide_udf()` for the others.
+`register_ai_functions` registers all functions, and they share one HTTP client. To register only some of them, use `register_ai_query` (just `ai_query`, plus default config) or the individual UDFs: `ai_query_udf()`, `ai_complete_udf()`, `ai_classify_udf()`, `ai_summarize_udf()`, `ai_analyze_sentiment_udf()`, `ai_probability_udf()`, `ai_if_udf()`, `ai_score_udf()`, `ai_decide_classify_udf()` and `ai_decide_udf()`. UDFs created this way don't share a client.
 
 ## Common behaviour
 

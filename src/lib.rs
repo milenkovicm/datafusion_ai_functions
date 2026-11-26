@@ -145,6 +145,7 @@ pub fn register_ai_query(ctx: &SessionContext) {
 /// `ai_score`, `ai_decide_classify`, `ai_decide`) and the default
 /// `datafusion_ai_functions.*` options (if absent) on the context. The functions share
 /// one HTTP client (connection pool).
+/// This function will register `AiQueryConfig` configuration extension as well.
 pub fn register_ai_functions(ctx: &SessionContext) {
     register_config(ctx);
     let clients = Arc::new(ClientCache::default());
