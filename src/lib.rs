@@ -18,7 +18,7 @@
 //!
 //! ```sql
 //! SET datafusion_ai_functions.endpoint = 'http://localhost:8000/v1';
-//! SET datafusion_ai_functions.api_token = 'sk-...';
+//! SET datafusion_ai_functions.secret = 'sk-...';
 //! SET datafusion_ai_functions.default_model = 'qwen2.5:14b-instruct';
 //! SELECT text, ai_query('Summarize: ' || text) AS summary FROM docs;
 //! SELECT ai_query('Say hi', MAP('model', 'gpt-oss-120b', 'temperature', '0'));

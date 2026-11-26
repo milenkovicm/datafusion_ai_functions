@@ -80,7 +80,7 @@ async fn setup(ctx: SessionContext, server: &MockServer) -> SessionContext {
     ))
     .await
     .unwrap();
-    ctx.sql("SET datafusion_ai_functions.api_token = 'secret'")
+    ctx.sql("SET datafusion_ai_functions.secret = 'secret'")
         .await
         .unwrap();
     ctx.sql("SET datafusion_ai_functions.max_retries = 0")

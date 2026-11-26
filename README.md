@@ -253,7 +253,7 @@ FROM (SELECT id, ai_decide(body, '{
 | `openai` (default) | `POST {decision_endpoint}/decisions` (OpenAI Decisions API) |
 | `systemone` | `POST {decision_endpoint}/systemone` (Ollama, e.g. `nimble`) |
 
-`decision_endpoint` and `decision_api_token` fall back to `endpoint` and `api_token`. Timeouts, retries and `max_concurrency` are the same as for the chat functions.
+`decision_endpoint` and `decision_secret` fall back to `endpoint` and `secret`. Timeouts, retries and `max_concurrency` are the same as for the chat functions.
 
 ### ai_parse_document & ai_extract
 
@@ -266,7 +266,7 @@ Options are DataFusion session config options under the `datafusion_ai_functions
 | Option | Default | Description |
 | --- | --- | --- |
 | `datafusion_ai_functions.endpoint` | `https://api.openai.com/v1` | OpenAI-compatible base URL, including the version path (`/v1`) |
-| `datafusion_ai_functions.api_token` | empty | Sent as `Authorization: Bearer <token>`. When empty, no auth header is sent. Like every session option it's visible in `SHOW ALL` and `information_schema.df_settings`. |
+| `datafusion_ai_functions.secret` | empty | Sent as `Authorization: Bearer <token>`. When empty, no auth header is sent. Like every session option it's visible in `SHOW ALL` and `information_schema.df_settings`. |
 | `datafusion_ai_functions.max_concurrency` | `8` | Maximum requests in flight at once for one function call on one record batch (see [Request scheduling](#request-scheduling)) |
 | `datafusion_ai_functions.timeout_ms` | `60000` | Timeout for each request |
 | `datafusion_ai_functions.max_retries` | `3` | Retries with exponential backoff on 429, 5xx and connect errors |
@@ -277,11 +277,11 @@ Options are DataFusion session config options under the `datafusion_ai_functions
 | `datafusion_ai_functions.default_model` | empty | Model used by all chat functions unless a call sets the `model` option. Either one must be set. |
 | `datafusion_ai_functions.decision_api` | `openai` | `openai` or `systemone`, see [Decision endpoint](#decision-endpoint) |
 | `datafusion_ai_functions.decision_endpoint` | empty | Base URL for decision functions. When empty, `endpoint` is used. |
-| `datafusion_ai_functions.decision_api_token` | empty | Token for decision functions. When empty, `api_token` is used. |
+| `datafusion_ai_functions.decision_secret` | empty | Token for decision functions. When empty, `secret` is used. |
 | `datafusion_ai_functions.decision_model` | empty | Decision model used unless a call sets the `model` option |
 | `datafusion_ai_functions.single_partition` | `true` | Evaluate AI functions on one partition. Only has an effect when the `AiSinglePartition` rule is installed, see [Single partition](#single-partition). |
 
-The HTTP client is cached and reused across batches and queries, and `register_ai_functions` shares one client between all functions. A new client is built only for a new combination of `endpoint`, `api_token`, `timeout_ms` and `max_retries`. The last few combinations are kept.
+The HTTP client is cached and reused across batches and queries, and `register_ai_functions` shares one client between all functions. A new client is built only for a new combination of `endpoint`, `secret`, `timeout_ms` and `max_retries`. The last few combinations are kept.
 
 ### Request scheduling
 

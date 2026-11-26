@@ -27,7 +27,7 @@ async fn main() -> datafusion::error::Result<()> {
         ("decision_endpoint", endpoint.as_str()),
         ("decision_api", api.as_str()),
         ("decision_model", model.as_str()),
-        ("decision_api_token", token.as_str()),
+        ("decision_secret", token.as_str()),
     ] {
         ctx.sql(&format!("SET datafusion_ai_functions.{key} = '{value}'"))
             .await?;

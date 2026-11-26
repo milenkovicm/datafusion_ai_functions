@@ -20,7 +20,7 @@ async fn main() -> datafusion::error::Result<()> {
     ))
     .await?;
     ctx.sql(&format!(
-        "SET datafusion_ai_functions.api_token = '{token}'"
+        "SET datafusion_ai_functions.secret = '{token}'"
     ))
     .await?;
     ctx.sql(&format!(

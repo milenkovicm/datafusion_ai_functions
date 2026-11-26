@@ -379,7 +379,7 @@ async fn decision_endpoint_and_token_override() {
     let ctx = ctx_for(&server).await;
     set(&ctx, "endpoint", "http://127.0.0.1:1/v1").await;
     set(&ctx, "decision_endpoint", &format!("{}/v1", server.uri())).await;
-    set(&ctx, "decision_api_token", "decision-secret").await;
+    set(&ctx, "decision_secret", "decision-secret").await;
     set(&ctx, "decision_api", "systemone").await;
     set(&ctx, "decision_model", "nimble").await;
     let out = query_col(&ctx, "SELECT CAST(ai_if('refund', 'x') AS VARCHAR)").await;

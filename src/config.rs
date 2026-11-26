@@ -12,7 +12,7 @@ extensions_options! {
         /// OpenAI compatible API base url (must include the version path, e.g. `/v1`)
         pub endpoint: String, default = "https://api.openai.com/v1".to_string()
         /// API token sent as `Authorization: Bearer <token>`; empty means no token
-        pub api_token: String, default = String::new()
+        pub secret: String, default = String::new()
         /// Maximum number of requests in flight at once for one function call
         pub max_concurrency: usize, default = 8
         /// Per request timeout in milliseconds
@@ -34,8 +34,8 @@ extensions_options! {
         pub single_partition: bool, default = true
         /// Base url for decision functions (`ai_if`, `ai_decide`, ...); empty means `endpoint`
         pub decision_endpoint: String, default = String::new()
-        /// API token for decision functions; empty means `api_token`
-        pub decision_api_token: String, default = String::new()
+        /// API token for decision functions; empty means `secret`
+        pub decision_secret: String, default = String::new()
         /// Decision model used unless a call sets the `model` option
         pub decision_model: String, default = String::new()
         /// Decision API: `openai` (`POST {base}/decisions`) or `systemone`
@@ -49,7 +49,7 @@ impl ConfigExtension for AiQueryConfig {
 }
 
 impl AiQueryConfig {
-    /// Defaults, with `endpoint` and `api_token` taken from
+    /// Defaults, with `endpoint` and `secret` taken from
     /// `OPENAI_BASE_URL` and `OPENAI_API_KEY` when set.
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
@@ -57,20 +57,20 @@ impl AiQueryConfig {
             cfg.endpoint = v;
         }
         if let Ok(v) = std::env::var("OPENAI_API_KEY") {
-            cfg.api_token = v;
+            cfg.secret = v;
         }
         cfg
     }
 
-    /// This config with `endpoint` and `api_token` replaced by
-    /// `decision_endpoint` and `decision_api_token` where those are set.
+    /// This config with `endpoint` and `secret` replaced by
+    /// `decision_endpoint` and `decision_secret` where those are set.
     pub(crate) fn decision_client_config(&self) -> Self {
         let mut cfg = self.clone();
         if !self.decision_endpoint.trim().is_empty() {
             cfg.endpoint = self.decision_endpoint.clone();
         }
-        if !self.decision_api_token.is_empty() {
-            cfg.api_token = self.decision_api_token.clone();
+        if !self.decision_secret.is_empty() {
+            cfg.secret = self.decision_secret.clone();
         }
         cfg
     }

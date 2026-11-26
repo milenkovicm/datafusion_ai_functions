@@ -23,7 +23,7 @@ pub type OpenAiClient = Client<OpenAIConfig>;
 #[derive(Clone, PartialEq, Eq)]
 struct ClientKey {
     endpoint: String,
-    api_token: String,
+    secret: String,
     timeout_ms: u64,
     max_retries: usize,
 }
@@ -32,7 +32,7 @@ impl From<&AiQueryConfig> for ClientKey {
     fn from(cfg: &AiQueryConfig) -> Self {
         Self {
             endpoint: cfg.endpoint.clone(),
-            api_token: cfg.api_token.clone(),
+            secret: cfg.secret.clone(),
             timeout_ms: cfg.timeout_ms,
             max_retries: cfg.max_retries,
         }
@@ -85,8 +85,8 @@ fn build_client(cfg: &AiQueryConfig) -> Result<OpenAiClient> {
         .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
     let mut oa_cfg = OpenAIConfig::new().with_api_base(cfg.endpoint.trim_end_matches('/'));
-    if !cfg.api_token.is_empty() {
-        oa_cfg = oa_cfg.with_api_key(cfg.api_token.clone());
+    if !cfg.secret.is_empty() {
+        oa_cfg = oa_cfg.with_api_key(cfg.secret.clone());
     }
 
     let service = OpenAIRetryLayer::new(cfg.max_retries).layer(ReqwestService::new(http.clone()));
@@ -222,7 +222,7 @@ mod tests {
     fn cfg(endpoint: &str) -> AiQueryConfig {
         AiQueryConfig {
             endpoint: endpoint.into(),
-            api_token: "sk-secret".into(),
+            secret: "sk-secret".into(),
             ..Default::default()
         }
     }
