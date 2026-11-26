@@ -241,6 +241,7 @@ FROM (SELECT id, ai_decide(body, '{
 | `model` | `datafusion_ai_functions.decision_model` | Decision model. One of them must be set. |
 | `on_error` | `datafusion_ai_functions.fail_on_error` | `'fail'` fails the query, `'null'` returns NULL. When the model declines a question, that's an error too. With `'null'`, the row is NULL, or in `ai_decide` only that question's field is. |
 | `instructions` | `Which label best fits the input?` | `ai_decide_classify` only: the question asked about the labels |
+
 - Each non-NULL row sends one request, and identical inputs in a batch are asked once. `ai_decide` asks all of its questions in a single request. Two separate functions on the same input still send two requests.
 - DataFusion may copy a call once for each field you access, e.g. for `d['a']` and `d['b']`. The copies reuse the answers of a recent identical call, so they don't send the requests again. Each function keeps its last 8 calls for 5 seconds, so an identical call (same function, arguments, settings and batch) within 5 seconds also reuses those answers.
 - `datafusion_ai_functions.system_prompt`, `temperature` and `max_tokens` aren't used.
