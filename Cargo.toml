@@ -3,6 +3,7 @@ name = "datafusion_ai_functions"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Connect Apache DataFusion and Ballista distributed SQL engines with LLMs and decision models via OpenAI-compatible APIs"
 
 [dependencies]
 datafusion = { version = "56.0" }
